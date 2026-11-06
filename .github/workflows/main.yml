@@ -1,0 +1,77 @@
+# ---------------------------------------------------------------------------
+# Build VocalMixer (Release VST3) on Windows and macOS (universal binary)
+# and upload the plugin as a per-OS artifact.
+# ---------------------------------------------------------------------------
+name: Build VocalMixer
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+
+    steps:
+      # Get the repository contents
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Fail early if any required source file is missing from the repo root
+      - name: Check source files are present
+        shell: bash
+        run: |
+          missing=0
+          for f in CMakeLists.txt PluginProcessor.h PluginProcessor.cpp PluginEditor.h PluginEditor.cpp; do
+            if [ -f "$f" ]; then
+              echo "Found $f"
+            else
+              echo "::error::Missing required file: $f"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then exit 1; fi
+
+      # Configure (macOS gets a universal arm64 + x86_64 binary)
+      - name: Configure CMake
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          else
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          fi
+
+      # Build the Release VST3 (--config matters for multi-config generators on Windows)
+      - name: Build
+        shell: bash
+        run: cmake --build build --config Release --parallel
+
+      # Copy the finished plugin bundle into a "stage" folder
+      - name: Stage VST3
+        shell: bash
+        run: |
+          mkdir -p stage
+          src=$(find build -type d -name "VocalMixer.vst3" | head -n 1)
+          if [ -z "$src" ]; then
+            echo "::error::VocalMixer.vst3 was not found in the build output"
+            exit 1
+          fi
+          echo "Staging $src"
+          cp -R "$src" stage/
+          ls -R stage | head -n 50
+
+      # Upload, named per OS; fail if nothing was staged
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VocalMixer-${{ runner.os }}-VST3
+          path: stage
+          if-no-files-found: error
